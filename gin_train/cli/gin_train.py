@@ -14,6 +14,7 @@ from comet_ml import Experiment
 # import all modules registering any gin configurables
 
 # configurables import
+from kipoi_cadd.trainers import SklearnTrainer
 from gin_train.trainers import KerasTrainer
 from gin_train import metrics
 from gin_train import trainers
@@ -40,7 +41,7 @@ def log_gin_config(output_dir, cometml_experiment=None):
     write_json(gin_config_dict,
                os.path.join(output_dir, "config.gin.json"),
                sort_keys=True,
-               indent=2)
+               indent=4)
 
     if cometml_experiment is not None:
         # Skip any rows starting with import
@@ -80,7 +81,7 @@ def train(output_dir,
           train_batch_sampler=None,
           stratified_sampler_p=None,
           tensorboard=True,
-          remote_dir='',
+          remote_dir=None,
           cometml_experiment=None
           ):
     """Main entry point to configure in the gin config
@@ -91,11 +92,9 @@ def train(output_dir,
     # from this point on, no configurable should be added. Save the gin config
     log_gin_config(output_dir, cometml_experiment)
 
-    train_dataset, valid_dataset = data
-    if stratified_sampler_p is not None and train_batch_sampler is not None:
-        raise ValueError("stratified_sampler_p and train_batch_sampler are mutually exclusive."
-                         " Please specify only one of them.")
+    print("Logging")
 
+    train_dataset, valid_dataset = data
     if stratified_sampler_p is not None and train_batch_sampler is None:
         # HACK - there is no guarantee that train_dataset.get_targets() will exist
         # Maybe we have to introduce a ClassificationDataset instead which will
@@ -105,19 +104,129 @@ def train(output_dir,
                                                                     batch_size=batch_size,
                                                                     p_vec=stratified_sampler_p,
                                                                     verbose=True)
+    if stratified_sampler_p is not None and train_batch_sampler is not None:
+        raise ValueError("stratified_sampler_p and train_batch_sampler are mutually exclusive."
+                         " Please specify only one of them.")
 
     tr = trainer_cls(model, train_dataset, valid_dataset, output_dir, cometml_experiment)
+
+    print("Got trainer_cls")
+
     tr.train(batch_size, epochs, early_stop_patience,
              num_workers, train_epoch_frac, valid_epoch_frac, train_batch_sampler, tensorboard)
+    
+    print("Finished training")
+
     final_metrics = tr.evaluate(eval_metric, batch_size=batch_size, num_workers=num_workers)
+
+
     logger.info("Done!")
     print("-" * 40)
     print("Final metrics: ")
     print(json.dumps(final_metrics, cls=NumpyAwareJSONEncoder, indent=2))
-    metrics_file = os.path.join(output_dir, 'evaluation.valid.json')
-    write_json(final_metrics, metrics_file, indent=2)
-    logger.info("Saved metrics to {}".format(metrics_file))
-    if remote_dir:
+    if remote_dir is not None:
+        import time
+        time.sleep(1)  # sleep so that hdf5 from Keras finishes writing
+        logger.info("Uploading files to: {}".format(remote_dir))
+        upload_dir(output_dir, remote_dir)
+    return final_metrics
+
+
+@gin.configurable
+def train_sklearn_sgd_classifier(output_dir,
+          model=gin.REQUIRED,
+          data=gin.REQUIRED,
+          trainer_cls=SklearnTrainer,
+          # shared
+          batch_size=256,
+          num_workers=8,
+          # train-specific
+          epochs=100,
+          remote_dir=None,
+          coef_init=None,
+          intercept_init=None,
+          sample_weight=None,
+          shuffle=True,
+          cometml_experiment=None,
+          save=True
+          ):
+    
+    """Main entry point to configure in the gin config
+    Args:
+      model: compiled keras model
+      data: tuple of (train, valid) Datasets
+    """
+    # from this point on, no configurable should be added. Save the gin config
+    log_gin_config(output_dir, cometml_experiment)
+
+    print("Logging")
+
+    train_dataset, valid_dataset = data
+
+    tr = trainer_cls(model, train_dataset, valid_dataset, output_dir, cometml_experiment)
+
+    print("Got trainer_cls")
+
+    tr.train(coef_init, intercept_init, sample_weight, batch_size, shuffle, num_workers)
+
+    print("Finished training")
+
+    final_metrics = tr.evaluate(batch_size, shuffle, num_workers, save)
+
+    logger.info("Done!")
+    print("-" * 40)
+    print("Final metrics: ")
+    print(json.dumps(final_metrics, cls=NumpyAwareJSONEncoder, indent=2))
+    if remote_dir is not None:
+        import time
+        time.sleep(1)  # sleep so that hdf5 from Keras finishes writing
+        logger.info("Uploading files to: {}".format(remote_dir))
+        upload_dir(output_dir, remote_dir)
+    return final_metrics
+
+
+@gin.configurable
+def train_sklearn_logistic_regression(output_dir,
+          model=gin.REQUIRED,
+          data=gin.REQUIRED,
+          eval_metric=gin.REQUIRED,
+          trainer_cls=SklearnTrainer,
+          # train-specific
+          remote_dir=None,
+          sample_weight=None,
+          scaler_path=None,
+          # extra
+          cometml_experiment=None,
+          save=True
+          ):
+    
+    """Main entry point to configure in the gin config
+    Args:
+      model: compiled keras model
+      data: tuple of (train, valid) Datasets
+    """
+    # from this point on, no configurable should be added. Save the gin config
+    log_gin_config(output_dir, cometml_experiment)
+
+    print("Logging")
+
+    train_dataset, valid_dataset = data
+
+    tr = trainer_cls(model, train_dataset, valid_dataset, output_dir, cometml_experiment)
+
+    print("Got trainer_cls")
+
+    tr.train(sample_weight, scaler_path=scaler_path)
+
+    print("Finished training")
+
+    final_metrics = tr.evaluate(eval_metric, scaler_path=scaler_path, save=save)
+
+    logger.info("Done!")
+    print("-" * 40)
+    print("Final metrics: ")
+    print(json.dumps(final_metrics, cls=NumpyAwareJSONEncoder, indent=2))
+    if remote_dir is not None:
         import time
         time.sleep(1)  # sleep so that hdf5 from Keras finishes writing
         logger.info("Uploading files to: {}".format(remote_dir))
@@ -169,15 +278,14 @@ def gin_train(gin_files, output_dir,
             if remote_dir:
                 remote_dir = os.path.join(remote_dir, cometml_experiment.id)
 
-    if os.path.exists(os.path.join(output_dir, 'config.gin')):
+    if os.path.exists(output_dir):
         if force_overwrite:
-            logger.info(f"config.gin already exists in the output "
-                        "directory {output_dir}. Removing the whole directory.")
+            logger.info(f"Output directory exists: {output_dir}. Removing it.")
             import shutil
             shutil.rmtree(output_dir)
         else:
             raise ValueError(f"Output directory {output_dir} shouldn't exist!")
-    os.makedirs(output_dir, exist_ok=True)  # make the output directory. It shouldn't exist
+    os.makedirs(output_dir)  # make the output directory. It shouldn't exist
 
     # add logging to the file
     add_file_logging(output_dir, logger)
@@ -201,7 +309,7 @@ def gin_train(gin_files, output_dir,
     write_json(note_params_dict,
                os.path.join(output_dir, "note_params.json"),
                sort_keys=True,
-               indent=2)
+               indent=4)
 
     if cometml_experiment is not None:
         # log other parameters
@@ -220,10 +328,13 @@ def gin_train(gin_files, output_dir,
                     "workspace": cometml_experiment.workspace},
                    os.path.join(output_dir, "cometml.json"),
                    sort_keys=True,
-                   indent=2)
+                   indent=4)
 
-    if remote_dir:
-        import time
-        logger.info("Test file upload to: {}".format(remote_dir))
-        upload_dir(output_dir, remote_dir)
-    return train(output_dir=output_dir, remote_dir=remote_dir, cometml_experiment=cometml_experiment)
+    #return train_sklearn(output_dir=output_dir, remote_dir=remote_dir, cometml_experiment=cometml_experiment)
+    return train_sklearn_logistic_regression(output_dir=output_dir, remote_dir=remote_dir, cometml_experiment=cometml_experiment)
+
+
+
+# gin_train("config.gin", "/tmp/gin-train/", remote_dir="s3://kipoi-cadd/models/", auto_subdir=True, cometml_project="gagneur-lab/kipoi-cadd", note_params="features=cadd-only")
+
+# gin_train config_scikit.gin /tmp/gin-train/ --remote-dir s3://kipoi-cadd/models/ --auto-subdir --cometml-project gagneur-lab/kipoi-cadd --note-params features=cadd-only

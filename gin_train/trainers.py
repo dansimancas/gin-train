@@ -71,12 +71,16 @@ class KerasTrainer:
             train_it = self.train_dataset.batch_train_iter(batch_size=batch_size,
                                                            shuffle=True,
                                                            num_workers=num_workers)
+        print("Got training iterator. Batch size:", batch_size, "num_workers:", num_workers, 
+              "Train batch sampler:", train_batch_sampler)
         next(train_it)
+        logger.info("Got training set")
         valid_it = self.valid_dataset.batch_train_iter(batch_size=batch_size,
                                                        shuffle=True,
                                                        num_workers=num_workers)
+        logger.info("Got validation iterator")
         next(valid_it)
-
+        logger.info("Got validation set")
         if tensorboard:
             tb = [TensorBoard(log_dir=self.output_dir)]
         else:
@@ -85,6 +89,8 @@ class KerasTrainer:
         # train the model
         if len(self.valid_dataset) == 0:
             raise ValueError("len(self.valid_dataset) == 0")
+
+        logger.info("Started fitting generator")
 
         self.model.fit_generator(train_it,
                                  epochs=epochs,
