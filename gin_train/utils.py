@@ -1,6 +1,7 @@
 import collections
 import sys
 import json
+import pickle
 import numpy as np
 
 
@@ -45,3 +46,14 @@ class NumpyAwareJSONEncoder(json.JSONEncoder):
 def write_json(obj, fname, **kwargs):
     with open(fname, "w") as f:
         return json.dump(obj, f, cls=NumpyAwareJSONEncoder, **kwargs)
+
+
+def load_pickle(filename):
+    with open(filename, 'rb') as f:
+        rn = pickle.load(f)
+    return rn
+
+
+def dump_to_pickle(filename, obj):
+    with open(filename, 'wb') as f:
+        pickle.dump(obj, f)
